@@ -404,39 +404,14 @@ echo "$USER@$HOSTNAME.$DOMAIN $ADMINEMAIL" > /etc/postfix/virtual
 postmap /etc/postfix/virtual
 #
 /etc/init.d/postfix restart
+# 
+#  Setting /home directory folders
 #
-# ================================================================== #
-#                              Web Server                            #
-# ================================================================== #
-#
-echo
-echo
-echo
-echo "Installing Apache threaded server (MPM Worker)"
-echo "---------------------------------------------------------------"
-#
-aptitude -y install apache2-mpm-worker apache2-suexec
-echo "ServerName $HOSTNAME" > /etc/apache2/conf.d/servername.conf
-sed -i "s/Timeout 300/Timeout 30/g" /etc/apache2/apache2.conf
-#
-/etc/init.d/apache2 restart
-#
-echo
-echo
-echo
-echo "Disabling default site"
-echo "---------------------------------------------------------------"
-#
-a2dissite default
-#
-echo
-echo
-echo
 echo "Creating directories for $DOMAIN in $USER's home directory"
 echo "--------------------------------------------------------------"
 #
-mkdir -p /home/$USER/public_html/$DOMAIN/{cgi-bin,log,log/old,www}
-echo "<?php echo '<h1>$DOMAIN works!</h1>'; ?>" > /home/$USER/public_html/$DOMAIN/www/index.php
+mkdir -p /home/$USER/$DOMAIN/{private,backup,logs,public}
+echo "<?php echo '<h1>$DOMAIN works!</h1>'; ?>" > /home/$USER/$DOMAIN/index.php
 #
 echo
 echo
@@ -444,9 +419,9 @@ echo
 echo "Setting correct ownership and permissions for $DOMAIN"
 echo "--------------------------------------------------------------"
 #
-chown -R $USER:$USER /home/$USER/public_html
-find /home/$USER/public_html/$DOMAIN/ -type d -exec chmod 755 {} \;
-find /home/$USER/public_html/$DOMAIN/ -type f -exec chmod 644 {} \;
+chown -R $USER:$USER /home/$USER
+find /home/$USER/$DOMAIN/ -type d -exec chmod 755 {} \;
+find /home/$USER/$DOMAIN/ -type f -exec chmod 644 {} \;
 #
 echo
 echo
@@ -455,68 +430,73 @@ echo "Creating VirtualHost for $DOMAIN"
 # http://www.howtoforge.com/how-to-set-up-apache2-with-mod_fcgid-and-php5-on-ubuntu-8.10
 echo "--------------------------------------------------------------"
 #
-echo "<VirtualHost *:80>
-    DocumentRoot /home/$USER/public_html/$DOMAIN/www
+echo "upstream $USER {
+        server unix:/tmp/php.socket;
+}
 
-    ServerName  $DOMAIN
-    ServerAlias www.$DOMAIN
-    ServerAdmin webmaster@$DOMAIN
-    ServerSignature Off
+server {
+        ## Your website name goes here.
+        server_name $DOMAIN www.$DOMAIN;
+        rewrite ^/(.*) http://$DOMAIN/$1 permanent;
 
-    LogLevel warn
-    ErrorLog  /home/$USER/public_html/$DOMAIN/log/error.log
-    CustomLog /home/$USER/public_html/$DOMAIN/log/access.log combined
+        ## Logs
+        access_log /home/$USER/$DOMAIN/logs/access.log;
+        error_log /home/$USER/$DOMAIN/logs/error.log;
 
-    <IfModule mod_fcgid.c>
-        SuexecUserGroup $USER $USER
-        <Directory /home/$USER/public_html/$DOMAIN/www>
-            Options FollowSymLinks +ExecCGI
-            AddHandler fcgid-script .php
-            FCGIWrapper /var/www/php-fcgi-scripts/$DOMAIN/php-fcgi-starter .php
-            AllowOverride All
-            Order allow,deny
-            Allow from all
-            DirectoryIndex index.php index.html
-        </Directory>
-    </IfModule>
-</VirtualHost>
+        ## Your only path reference.
+        root   /home/$USER/$DOMAIN/public;
 
-<IfModule mod_ssl.c>
-    <VirtualHost *:443>
-        DocumentRoot /home/$USER/public_html/$DOMAIN/www
+        error_page 404 index.php;
 
-        ServerName  $DOMAIN
-        ServerAlias www.$DOMAIN
-        ServerAdmin webmaster@$DOMAIN
-        ServerSignature Off
+        ## This should be in your http block and if it is, it's not needed here.
+        index index.php;
 
-        LogLevel warn
-        ErrorLog  /home/$USER/public_html/$DOMAIN/log/ssl_error.log
-        CustomLog /home/$USER/public_html/$DOMAIN/log/ssl_access.log combined
+        location = /favicon.ico {
+                log_not_found off;
+                access_log off;
+        }
 
-        # See /etc/apache2/sites-available/default-ssl
+        location = /robots.txt {
+                allow all;
+                log_not_found off;
+                access_log off;
+        }
 
-	    SSLEngine on
+        location ~* \.(js|css|png|jpg|jpeg|gif|ico)$ {
+                expires max;
+                log_not_found off;
+        }
 
-	    SSLCertificateFile    /etc/ssl/certs/ssl-cert-snakeoil.pem
-	    SSLCertificateKeyFile /etc/ssl/private/ssl-cert-snakeoil.key
+        location ~* \.(eot|ttf|woff)$ {
+                add_header Access-Control-Allow-Origin *;
+        }
 
-	    <FilesMatch \"\\.(cgi|shtml|phtml|php)$\">
-		    SSLOptions +StdEnvVars
-	    </FilesMatch>
-	    <Directory /usr/lib/cgi-bin>
-		    SSLOptions +StdEnvVars
-	    </Directory>
+        location ~ /\.ht {
+                 deny all;
+         }
 
-	    BrowserMatch \"MSIE [2-6]\" \\
-		    nokeepalive ssl-unclean-shutdown \\
-		    downgrade-1.0 force-response-1.0
-	    # MSIE 7 and newer should be able to use keepalive
-	    BrowserMatch \"MSIE [17-9]\" ssl-unclean-shutdown
+         location ~* (\.(tpl|ini))$ {
+                 deny all;
+         }
 
-    </VirtualHost>
-</IfModule>
-" > /etc/apache2/sites-available/$DOMAIN
+        location / {
+                location ~* \.(php|inc)$ {
+                fastcgi_split_path_info ^(.+\.php)(/.+)$;
+                fastcgi_intercept_errors on;
+                include fastcgi_params;
+                fastcgi_pass $USER;
+                fastcgi_param  SCRIPT_FILENAME  $document_root$fastcgi_script_name;
+                fastcgi_param REDIRECT_STATUS 200;
+
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header Host $http_host;
+                proxy_redirect off;
+                }
+        }
+
+
+}" > /etc/nginx/sites-available/$DOMAIN
 #
 echo
 echo
@@ -542,164 +522,24 @@ chown -R $USER:$USER /var/www/php-fcgi-scripts/$DOMAIN
 echo
 echo
 echo
-echo "Adding logrotate conf for $DOMAIN"
-echo "--------------------------------------------------------------"
-#
-echo "/home/$USER/public_html/$DOMAIN/log/*.log {
-    weekly
-    missingok
-    rotate 52
-    compress
-    delaycompress
-    notifempty
-    create 640 $USER $USER
-    olddir /home/$USER/public_html/$DOMAIN/log/old/
-}
-" > /etc/logrotate.d/$DOMAIN
-#
+echo 
 echo
 echo
 echo
-echo "Enabling site $DOMAIN, restarting apache"
-echo "--------------------------------------------------------------"
-#
-a2ensite $DOMAIN
-/etc/init.d/apache2 restart
-#
 echo
 echo
 echo
-echo "Enable Apache modules"
-echo "---------------------------------------------------------------"
 echo
-#
-a2enmod rewrite headers expires deflate ssl suexec
-#
+echo
+echo 
 echo
 echo
 echo
-echo "Disable Apache modules"
-echo "---------------------------------------------------------------"
-echo
-#
-a2dismod status cgid
-#
-#
+echo 
 echo
 echo
 echo
-echo "Add mod_expires configuration. WARNING: May cause issues with pages that change content dynamically."
-# https://akeeba.assembla.com/code/master-htaccess/git/nodes/htaccess.txt
-echo "---------------------------------------------------------------"
-#
-echo "<IfModule mod_expires.c>
-    # Enable expiration control
-    ExpiresActive On
-
-    # Default expiration: 1 hour after request
-    ExpiresDefault \"now plus 1 hour\"
-
-    # CSS and JS expiration: 1 week after request
-    ExpiresByType text/css \"now plus 1 week\"
-    ExpiresByType application/javascript \"now plus 1 week\"
-    ExpiresByType application/x-javascript \"now plus 1 week\"
-
-    # Image files expiration: 1 month after request
-    ExpiresByType image/bmp \"now plus 1 month\"
-    ExpiresByType image/gif \"now plus 1 month\"
-    ExpiresByType image/jpeg \"now plus 1 month\"
-    ExpiresByType image/jp2 \"now plus 1 month\"
-    ExpiresByType image/pipeg \"now plus 1 month\"
-    ExpiresByType image/png \"now plus 1 month\"
-    ExpiresByType image/svg+xml \"now plus 1 month\"
-    ExpiresByType image/tiff \"now plus 1 month\"
-    ExpiresByType image/vnd.microsoft.icon \"now plus 1 month\"
-    ExpiresByType image/x-icon \"now plus 1 month\"
-    ExpiresByType image/ico \"now plus 1 month\"
-    ExpiresByType image/icon \"now plus 1 month\"
-    ExpiresByType text/ico \"now plus 1 month\"
-    ExpiresByType application/ico \"now plus 1 month\"
-    ExpiresByType image/vnd.wap.wbmp \"now plus 1 month\"
-    ExpiresByType application/vnd.wap.wbxml \"now plus 1 month\"
-    ExpiresByType application/smil \"now plus 1 month\"
-
-    # Audio files expiration: 1 month after request
-    ExpiresByType audio/basic \"now plus 1 month\"
-    ExpiresByType audio/mid \"now plus 1 month\"
-    ExpiresByType audio/midi \"now plus 1 month\"
-    ExpiresByType audio/mpeg \"now plus 1 month\"
-    ExpiresByType audio/x-aiff \"now plus 1 month\"
-    ExpiresByType audio/x-mpegurl \"now plus 1 month\"
-    ExpiresByType audio/x-pn-realaudio \"now plus 1 month\"
-    ExpiresByType audio/x-wav \"now plus 1 month\"
-
-    # Movie files expiration: 1 month after request
-    ExpiresByType application/x-shockwave-flash \"now plus 1 month\"
-    ExpiresByType x-world/x-vrml \"now plus 1 month\"
-    ExpiresByType video/x-msvideo \"now plus 1 month\"
-    ExpiresByType video/mpeg \"now plus 1 month\"
-    ExpiresByType video/mp4 \"now plus 1 month\"
-    ExpiresByType video/quicktime \"now plus 1 month\"
-    ExpiresByType video/x-la-asf \"now plus 1 month\"
-    ExpiresByType video/x-ms-asf \"now plus 1 month\"
-</IfModule>
-" >> /etc/apache2/conf.d/mod-expires.conf
-#
-echo
-echo
-echo
-echo "Add mod_deflate configuration"
-# https://akeeba.assembla.com/code/master-htaccess/git/nodes/htaccess.txt
-echo "---------------------------------------------------------------"
-#
-echo "<IfModule mod_deflate.c>
-    <Location />
-        # Insert filter
-        AddOutputFilterByType DEFLATE text/plain text/html text/xml text/css application/xml application/xhtml+xml application/rss+xml application/javascript application/x-javascript
-
-        # Netscape 4.x has some problems...
-        BrowserMatch ^Mozilla/4 gzip-only-text/html
-
-        # Netscape 4.06-4.08 have some more problems
-        BrowserMatch ^Mozilla/4\.0[678] no-gzip
-
-        # MSIE masquerades as Netscape, but it is fine
-        # BrowserMatch \bMSIE !no-gzip !gzip-only-text/html
-
-        # NOTE: Due to a bug in mod_setenvif up to Apache 2.0.48
-        # the above regex won't work. You can use the following
-        # workaround to get the desired effect:
-        BrowserMatch \bMSI[E] !no-gzip !gzip-only-text/html
-
-        # Don't compress images
-        SetEnvIfNoCase Request_URI \\
-        \.(?:gif|jpe?g|png)$ no-gzip dont-vary
-
-        # Make sure proxies don't deliver the wrong content
-        Header append Vary User-Agent env=!dont-vary
-    </Location>
-</IfModule>
-" >> /etc/apache2/conf.d/mod-deflate.conf
-#
-echo
-echo
-echo
-echo "Custom Apache2 settings"
-echo "---------------------------------------------------------------"
-#
-echo "# Keep connections alive for only a few seconds
-KeepAlive On
-KeepAliveTimeout 3
-" >> /etc/apache2/conf.d/apache2-custom.conf
-#
-echo
-echo
-echo
-echo "Installing Apache2 Utils"
-echo "---------------------------------------------------------------"
-#
-aptitude install -y apache2-utils
-#
+echo 
 echo
 echo
 echo
@@ -709,7 +549,6 @@ echo "--------------------------------------------------------------"
 #
 aptitude -y install mysql-server && mysql_secure_installation
 #
-aptitude -y install libapache2-mod-auth-mysql
 #
 echo
 echo
@@ -718,11 +557,10 @@ echo "Install fcgid, PHP, and PHP modules"
 # https://help.ubuntu.com/community/ApacheMySQLPHP
 echo "--------------------------------------------------------------"
 #
-aptitude -y install libapache2-mod-fcgid php5-cgi php5-cli php5-mysql php5-curl php5-gd php5-mcrypt php5-memcache php5-mhash php5-suhosin php5-xmlrpc php5-xsl
+aptitude -y install php5-cgi php5-cli php5-mysql php5-curl php5-gd php5-mcrypt php5-memcache php5-mhash php5-suhosin php5-xmlrpc php5-xsl
 #
-a2enmod fcgid
 #
-/etc/init.d/apache2 restart
+/etc/init.d/nginx restart
 #
 echo
 echo
@@ -736,76 +574,11 @@ sed -i "s/# configuration for php MCrypt module/; configuration for php MCrypt m
 echo
 echo
 echo
-echo "Configuring fcgid"
-echo "--------------------------------------------------------------"
-#
-echo "<IfModule mod_fcgid.c>
-  AddHandler fcgid-script .fcgi .php
-
-  # Where to look for the php.ini file?
-  DefaultInitEnv PHPRC        \"/etc/php5/cgi\"
-
-  # Maximum number of PHP processes
-  # Default 1000
-  FcgidMaxProcesses         10
-
-  # Number of seconds of idle time before a process is terminated
-  # Default 40
-  FcgidIOTimeout            30
-  # Default 300
-  FcgidIdleTimeout          120
-
-  #Or use this if you use the file above
-  FCGIWrapper /usr/bin/php-cgi .php
-</IfModule>
-" > /etc/apache2/conf.d/php-fcgid.conf
-#
 echo
 echo
 echo
-echo "Configuring apach mpm worker module"
-echo "--------------------------------------------------------------"
-#
-echo "<IfModule worker.c>
-    # Combined with ThreadLimit to set maximum configured value for MaxClients
-    # Default 16
-    # ServerLimit           16
-
-    # Sets the maximum configured value for ThreadsPerChild
-    # Default 64
-    # ThreadLimit           64
-
-    # Number of child server processes created on startup
-    # Default 3
-    StartServers            2
-
-    # Minimum number of idle threads to handle request spikes
-    # Default 75
-    MinSpareThreads         5
-
-    # Minimum number of idle threads to handle request spikes
-    # Default 250
-    MaxSpareThreads         10
-
-    # Number of threads created by each child process
-    # Default 25
-    ThreadsPerChild         10
-
-    # Number of simultaneous requests that will be served, integer multiple of ThreadsPerChild
-    # Default 16
-    # Linode 512: MaxClients 25 or less
-    # Linode 1024: MaxClients 50 or less
-    # Linode 1536: MaxClients 75 or less
-    # Linode 2048: MaxClients 100 or less
-    MaxClients              20
-
-    # Number of requests that an individual child server process will handle
-    # Default 1000
-    # 0 = process will never expire
-    MaxRequestsPerChild     100
-</IfModule>
-"  > /etc/apache2/conf.d/mpm-worker.conf
-#
+echo
+echo 
 echo
 echo
 echo
@@ -870,37 +643,16 @@ cp /usr/share/logwatch/default.conf/logfiles/http.conf to /etc/logwatch/conf/log
 #
 echo "
 # Log files for $DOMAIN
-LogFile = /home/$USER/public_html/$DOMAIN/log/access.log
-LogFile = /home/$USER/public_html/$DOMAIN/log/error.log
-LogFile = /home/$USER/public_html/$DOMAIN/log/ssl_error.log
-LogFile = /home/$USER/public_html/$DOMAIN/log/ssl_access.log
+LogFile = /home/$USER/$DOMAIN/logs/access.log
+LogFile = /home/$USER/$DOMAIN/logs/error.log
+LogFile = /home/$USER/$DOMAIN/logs/ssl_error.log
+LogFile = /home/$USER/$DOMAIN/logs/ssl_access.log
 " >> /etc/logwatch/conf/logfiles/http.conf
 #
 echo
 echo
 echo
-echo "Installing mod_evasive"
-# http://library.linode.com/web-servers/apache/mod-evasive
-echo "---------------------------------------------------------------"
-#
-aptitude install -y libapache2-mod-evasive
-mkdir /var/log/mod_evasive
-chown www-data:www-data /var/log/mod_evasive/
-echo "<ifmodule mod_evasive20.c>
-    DOSHashTableSize 3097
-    DOSPageCount 5
-    DOSSiteCount 50
-    DOSPageInterval 1
-    DOSSiteInterval 1
-    DOSBlockingPeriod 10
-    DOSLogDir /var/log/mod_evasive
-    DOSEmailNotify $ADMINEMAIL
-    DOSWhitelist 127.0.0.1
-    DOSWhitelist $IGNOREIP
-</ifmodule>
-" > /etc/apache2/conf.d/modevasive
-#
-echo
+echo 
 echo
 echo
 echo "Installing Fail2ban"
@@ -918,28 +670,25 @@ sed -i "s/action = %(action_)s/action = %(action_mw)s/g" /etc/fail2ban/jail.loca
 echo
 echo
 echo
-echo "Adding mod_security monitoring to fail2ban"
+echo "Adding nginx monitoring to fail2ban"
 # based on http://www.fail2ban.org/wiki/index.php/HOWTO_fail2ban_with_ModSecurity2.5
 echo "---------------------------------------------------------------"
 #
-echo "
-[modsecurity]
+echo "[nginx]
 
 enabled  = true
-filter   = modsecurity
-action   = iptables-multiport[name=ModSecurity, port=\"http,https\"]
-           sendmail-buffered[name=ModSecurity, lines=10, dest=$ADMINEMAIL]
-logpath  = /var/log/apache*/*error.log
+port    = http,https
+filter   = apache-auth
+logpath  = /var/log/nginx*/*error.log
 bantime  = 600
 maxretry = 3
 
-[modsecurity-$DOMAIN]
+[nginx-$DOMAIN]
 
 enabled  = true
-filter   = modsecurity
-action   = iptables-multiport[name=ModSecurity-$DOMAIN, port=\"http,https\"]
-           sendmail-buffered[name=ModSecurity, lines=10, dest=webmaster@$DOMAIN]
-logpath  = /home/$USER/public_html/$DOMAIN/log/*error.log
+port    = http,https
+filter   = apache-auth
+logpath  = /home/$USER/$DOMAIN/logs/*error.log
 bantime  = 600
 maxretry = 3
 " >> /etc/fail2ban/jail.local
@@ -957,189 +706,23 @@ ignoreregex =
 echo
 echo
 echo
-echo "Basic Apache security"
-echo "---------------------------------------------------------------"
-#
-sed -i "s/ServerTokens OS/ServerTokens Prod/g" /etc/apache2/conf.d/security
-sed -i "s/ServerSignature On/ServerSignature Off/g" /etc/apache2/conf.d/security
-#
+echo 
 echo
 echo
 echo
-echo "Installing mod_security"
-# http://library.linode.com/web-servers/apache/mod-security
-echo "---------------------------------------------------------------"
-#
-aptitude -y install libxml2 libxml2-dev libxml2-utils
-aptitude -y install libaprutil1 libaprutil1-dev
-aptitude -y install libapache-mod-security
-#
+echo 
 echo
 echo
 echo
-echo "Fetching OWASP rules for mod_security"
-# https://www.owasp.org/index.php/Category:OWASP_ModSecurity_Core_Rule_Set_Project
-echo "---------------------------------------------------------------"
-#
-wget http://downloads.sourceforge.net/project/mod-security/modsecurity-crs/0-CURRENT/modsecurity-crs_2.2.4.tar.gz
-tar xzf modsecurity-crs_2.2.4.tar.gz
-mv modsecurity-crs_2.2.4 /etc/apache2/modsecurity-crs
-rm -r modsecurity-crs_2.2.4.tar.gz
-#
+echo 
 echo
 echo
 echo
-echo "Enabling OWASP example configuration"
-echo "---------------------------------------------------------------"
-#
-mv /etc/apache2/modsecurity-crs/modsecurity_crs_10_config.conf.example /etc/apache2/modsecurity-crs/modsecurity_crs_10_config.conf
-#
+echo 
 echo
 echo
 echo
-echo "Adding custom OWASP configuration"
-# http://permalink.gmane.org/gmane.comp.apache.mod-security.user/8735
-# https://ppmts.custhelp.com/app/answers/detail/a_id/92
-echo "---------------------------------------------------------------"
-#
-echo "# Whitelisting notify.paypal.com(IPN)
-SecRule REMOTE_ADDR \"@streq 216.113.188.202\" \"phase:1,allow,ctl:ruleEngine=off,msg:'Disabling rule-engine for IP %{REMOTE_ADDR}'\"
-SecRule REMOTE_ADDR \"@streq 216.113.188.203\" \"phase:1,allow,ctl:ruleEngine=off,msg:'Disabling rule-engine for IP %{REMOTE_ADDR}'\"
-SecRule REMOTE_ADDR \"@streq 216.113.188.204\" \"phase:1,allow,ctl:ruleEngine=off,msg:'Disabling rule-engine for IP %{REMOTE_ADDR}'\"
-SecRule REMOTE_ADDR \"@streq 66.211.170.66\" \"phase:1,allow,ctl:ruleEngine=off,msg:'Disabling rule-engine for IP %{REMOTE_ADDR}'\"
-" > /etc/apache2/modsecurity-crs/modsecurity_crs_15_custom.conf
-#
-echo
-echo
-echo
-echo "Activating additonal select rulesets"
-echo "---------------------------------------------------------------"
-#
-for f in $(ls /etc/apache2/modsecurity-crs/optional_rules/ | grep comment_spam) ; do ln -s /etc/apache2/modsecurity-crs/optional_rules/$f /etc/apache2/modsecurity-crs/activated_rules/$f ; done
-for f in $(ls /etc/apache2/modsecurity-crs/slr_rules/ | grep joomla) ; do ln -s /etc/apache2/modsecurity-crs/slr_rules/$f /etc/apache2/modsecurity-crs/activated_rules/$f ; done
-for f in $(ls /etc/apache2/modsecurity-crs/slr_rules/ | grep rfi) ; do ln -s /etc/apache2/modsecurity-crs/slr_rules/$f /etc/apache2/modsecurity-crs/activated_rules/$f ; done
-for f in $(ls /etc/apache2/modsecurity-crs/slr_rules/ | grep lfi) ; do ln -s /etc/apache2/modsecurity-crs/slr_rules/$f /etc/apache2/modsecurity-crs/activated_rules/$f ; done
-for f in $(ls /etc/apache2/modsecurity-crs/slr_rules/ | grep xss) ; do ln -s /etc/apache2/modsecurity-crs/slr_rules/$f /etc/apache2/modsecurity-crs/activated_rules/$f ; done
-chown -R root:root /etc/apache2/modsecurity-crs
-#
-echo
-echo
-echo
-echo "Enabling security rules engine with default setting of DetectionOnly. Possible settings are On|Off|DetectionOnly. Before changing to On, ensure that no false positives occur. For more information about SecRuleEngine, see http://www.modsecurity.org/documentation/modsecurity-apache/2.1.3/html-multipage/03-configuration-directives.html#N106E7"
-# http://sourceforge.net/apps/mediawiki/mod-security/index.php?title=FAQ#Should_I_initially_set_the_SecRuleEngine_to_On.3F
-echo "---------------------------------------------------------------"
-#
-sed -i "s/#SecRuleEngine DetectionOnly/SecRuleEngine DetectionOnly/g" /etc/apache2/modsecurity-crs/modsecurity_crs_10_config.conf
-#
-echo
-echo
-echo
-echo "Setting up logs for mod_security"
-echo "---------------------------------------------------------------"
-#
-mkdir /var/log/mod_security/
-chown www-data:www-data -R /var/log/mod_security/
-#
-echo "
-SecTmpDir /tmp
-SecDataDir /var/log/mod_security
-# SecDebugLog /var/log/mod_security/debug.log
-# SecDebugLogLevel 3
-" >> /etc/apache2/modsecurity-crs/modsecurity_crs_10_config.conf
-#
-echo
-echo
-echo
-echo "Establishing log rotation for mod_security"
-echo "---------------------------------------------------------------"
-#
-mkdir /var/log/mod_security/old/
-#
-echo "/var/log/mod_security/*.log {
-    weekly
-    missingok
-    rotate 13
-    compress
-    delaycompress
-    notifempty
-    create 640 www-data www-data
-    olddir /var/log/mod_security/old/
-}
-
-/var/log/mod_security/*.dir {
-    weekly
-    missingok
-    rotate 13
-    compress
-    delaycompress
-    notifempty
-    create 640 www-data www-data
-    olddir /var/log/mod_security/old/
-}
-
-/var/log/mod_security/*.pag {
-    weekly
-    missingok
-    rotate 13
-    compress
-    delaycompress
-    notifempty
-    create 640 www-data www-data
-    olddir /var/log/mod_security/old/
-}
-" > /etc/logrotate.d/mod_security
-#
-
-
-echo
-echo
-echo
-echo "Enabling mod_security"
-echo "---------------------------------------------------------------"
-#
-echo "<IfModule security2_module>
-    Include modsecurity-crs/modsecurity_crs_10_config.conf
-    Include modsecurity-crs/modsecurity_crs_15_custom.conf
-    Include modsecurity-crs/base_rules/*.conf
-    Include modsecurity-crs/activated_rules/*.conf
-</IfModule>
-" > /etc/apache2/conf.d/modsecurity
-#
-echo
-echo
-echo
-echo "Disabling macro support for numeric operators in ModSecurity CRS v2.2.4. We need ModSecurity 2.5.12 for their support, Lucid uses 2.5.11-1"
-echo "---------------------------------------------------------------"
-#
-sed -i "s/SecAction \"phase:1,id:'981211',t:none,nolog,pass,setvar:tx.max_num_args=255\"/#SecAction \"phase:1,id:'981211',t:none,nolog,pass,setvar:tx.max_num_args=255\"/g" /etc/apache2/modsecurity-crs/modsecurity_crs_10_config.conf
-#
-echo
-echo
-echo
-echo "Hardcoding a numeric value in place of disabled tx.max_num_args operator"
-echo "---------------------------------------------------------------"
-#
-sed -i "s/%{tx.max_num_args}/255/g" /etc/apache2/modsecurity-crs/base_rules/modsecurity_crs_23_request_limits.conf
-#
-echo
-echo
-echo
-echo "Fixing backward compatability issue in ModSecurity CRS v2.2.4. REQBODY_ERROR renamed to  REQBODY_PROCESSOR_ERROR in ModSecurity 2.6.0"
-# http://permalink.gmane.org/gmane.comp.apache.mod-security.owasp-crs/411
-echo "---------------------------------------------------------------"
-#
-sed -i "s/REQBODY_ERROR/REQBODY_PROCESSOR_ERROR/g" /etc/apache2/modsecurity-crs/base_rules/modsecurity_crs_20_protocol_violations.conf
-#
-echo
-echo
-echo
-echo "Modifying rules to reduce false positives"
-echo "---------------------------------------------------------------"
-#
-sed -i "s/|between|/|/g" /etc/apache2/modsecurity-crs/base_rules/modsecurity_crs_41_sql_injection_attacks.conf
-sed -i "s/|div|/|/g" /etc/apache2/modsecurity-crs/base_rules/modsecurity_crs_41_sql_injection_attacks.conf
-sed -i "s/|like|/|/g" /etc/apache2/modsecurity-crs/base_rules/modsecurity_crs_41_sql_injection_attacks.conf
-#
+echo 
 echo
 echo
 echo
